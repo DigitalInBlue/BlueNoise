@@ -1,0 +1,61 @@
+from __future__ import annotations
+from typing import List, Dict
+import imageio
+import os
+import subprocess
+import shutil
+import logging
+
+logger = logging.getLogger(__name__)
+
+Frame = Dict[str, object]  # {"image": PIL.Image, "duration_ms": int}
+
+
+def encode_frames_to_mp4(frames: List[Frame], out_path: str, fps: int = 24, crf: int = 20) -> None:
+    if not frames:
+        raise ValueError("No frames to encode")
+
+    # Ensure even dimensions
+    first = frames[0]["image"]
+    try:
+        import PIL.Image as _PIL
+        w, h = first.size  # type: ignore
+    except Exception as e:
+        raise ValueError("Invalid frame image") from e
+
+    pad_w = w % 2
+    pad_h = h % 2
+
+    tmpdir = os.path.dirname(out_path)
+    os.makedirs(tmpdir, exist_ok=True)
+
+    # Prefer calling ffmpeg directly for control
+    if shutil.which("ffmpeg"):
+        # Write frames to a pipe via imageio to keep things simple
+        with imageio.get_writer(
+            out_path,
+            format="ffmpeg",
+            mode="I",
+            fps=fps,
+            codec="libx264",
+            quality=None,
+            pixelformat="yuv420p",
+            macro_block_size=None,
+            ffmpeg_params=["-crf", str(crf)] + (["-vf", f"pad=iw+{pad_w}:ih+{pad_h}"] if (pad_w or pad_h) else []),
+        ) as writer:
+            for fr in frames:
+                writer.append_data(imageio.v3.asarray(fr["image"]))  # type: ignore
+        return
+
+    # Fallback: try imageio-ffmpeg bundled executable (imageio controls this internally)
+    with imageio.get_writer(
+        out_path,
+        format="ffmpeg",
+        mode="I",
+        fps=fps,
+        codec="libx264",
+        pixelformat="yuv420p",
+        ffmpeg_params=["-crf", str(crf)],
+    ) as writer:
+        for fr in frames:
+            writer.append_data(imageio.v3.asarray(fr["image"]))  # type: ignore
