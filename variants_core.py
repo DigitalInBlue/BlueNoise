@@ -12,18 +12,33 @@ logger = logging.getLogger(__name__)
 _registry: Dict[str, "VariantMeta"] = {}
 
 @dataclass
-class Option: default: Any
-class Bool(Option): pass
+class Option:
+    default: Any
+
+class Bool(Option):
+    pass
+
 class Int(Option):
     def __init__(self, default: int, min_value: int, max_value: int, step: int = 1):
-        super().__init__(default); self.min=min_value; self.max=max_value; self.step=step
+        super().__init__(default)
+        self.min = min_value
+        self.max = max_value
+        self.step = step
+
 class Float(Option):
     def __init__(self, default: float, min_value: float, max_value: float, step: float = 0.01):
-        super().__init__(default); self.min=min_value; self.max=max_value; self.step=step
+        super().__init__(default)
+        self.min = min_value
+        self.max = max_value
+        self.step = step
+
 class Enum(Option):
     def __init__(self, default: str, choices):
-        super().__init__(default); self.choices=list(choices)
-class Color(Option): pass
+        super().__init__(default)
+        self.choices = list(choices)
+
+class Color(Option):
+    pass
 
 @dataclass
 class VariantMeta:
@@ -33,15 +48,71 @@ class VariantMeta:
     animated: bool
     preview_safe: bool
 
-def variant(name: str, *, options: Dict[str, Option], animated: bool=False, preview_safe: bool=True):
+def variant(name: str, *, options: Dict[str, Option], animated: bool = False, preview_safe: bool = True):
+    """
+    Register a variant with the global registry.
+    """
     def deco(fn: Callable[..., Any]):
-        _registry[name] = VariantMeta(name=name, func=fn, options=options, animated=animated, preview_safe=preview_safe)
+        _registry[name] = VariantMeta(
+            name=name,
+            func=fn,
+            options=options,
+            animated=animated,
+            preview_safe=preview_safe,
+        )
         return fn
     return deco
 
+# ---------------- option casting (no implicit scaling) ----------------
+def scale_options_for_size(opts: Dict[str, Any], size: tuple[int, int], ref_dim: int = 1024) -> Dict[str, Any]:
+    """
+    Backward-compat shim. No scaling. Returns a shallow copy of opts.
+    Variants must be written with normalized, size-agnostic parameters.
+    """
+    return dict(opts)
+
+def scale_and_cast_options(meta: VariantMeta, opts: Dict[str, Any], size: tuple[int, int], ref_dim: int = 1024) -> Dict[str, Any]:
+    """
+    Cast values to the declared option type. Do not scale.
+    Each filter must interpret its parameters relative to the current image size.
+    """
+    out: Dict[str, Any] = {}
+    for k, v in opts.items():
+        spec = meta.options.get(k)
+        try:
+            if spec is None:
+                out[k] = v
+            elif isinstance(spec, Bool):
+                out[k] = bool(v)
+            elif isinstance(spec, Int):
+                iv = int(round(v))
+                if iv < spec.min:
+                    iv = spec.min
+                if iv > spec.max:
+                    iv = spec.max
+                out[k] = iv
+            elif isinstance(spec, Float):
+                fv = float(v)
+                if fv < spec.min:
+                    fv = spec.min
+                if fv > spec.max:
+                    fv = spec.max
+                out[k] = fv
+            elif isinstance(spec, Enum):
+                out[k] = v if v in spec.choices else spec.default
+            elif isinstance(spec, Color):
+                out[k] = v
+            else:
+                out[k] = v
+        except Exception:
+            out[k] = spec.default if spec is not None else v
+    return out
+
 # ---------------- robust discovery ----------------
 def _import_variants_package(package: str = "variants") -> None:
-    """Import the variants package and its submodules; surface exceptions."""
+    """
+    Import the variants package and its submodules; surface exceptions.
+    """
     pkg = importlib.import_module(package)
     # Import autoload first (if present), so it can register variants.py
     try:
@@ -57,7 +128,9 @@ def _import_variants_package(package: str = "variants") -> None:
             importlib.import_module(modname)
 
 def _fallback_load_variants_py() -> None:
-    """If nothing registered, try loading project-root variants.py directly."""
+    """
+    If nothing registered, try loading project-root variants.py directly.
+    """
     import os
     root = os.path.abspath(os.path.dirname(__file__))          # .../variants_core.py
     root = os.path.abspath(os.path.join(root, os.pardir))      # project root
@@ -74,7 +147,7 @@ def _fallback_load_variants_py() -> None:
         return
     from PIL import Image
     def wrap(fn):
-        def f(img: Image.Image, **kwargs):  # pass kwargs if the function accepts them
+        def f(img: Image.Image, **kwargs):
             try:
                 return fn(img, **kwargs)
             except TypeError:
@@ -83,14 +156,17 @@ def _fallback_load_variants_py() -> None:
     for name, fn in VARIANTS.items():
         if callable(fn):
             # best-effort: no options inference here; static registration
-            variant(name=name, options={}, animated=(name=="scan_jitter_gif"), preview_safe=(name!="scan_jitter_gif"))(wrap(fn))
+            variant(
+                name=name,
+                options={},
+                animated=(name == "scan_jitter_gif"),
+                preview_safe=(name != "scan_jitter_gif"),
+            )(wrap(fn))
 
 def discover_variants(package: str = "variants") -> Dict[str, VariantMeta]:
-    """Load variants from the package; fall back to root variants.py if needed."""
-    # Clear previous (in case of hot-reload)
-    # (If you want to keep prior, drop this)
-    # _registry.clear()  # optional; keep commented if you load once
-
+    """
+    Load variants from the package; fall back to root variants.py if needed.
+    """
     try:
         _import_variants_package(package)
     except Exception as e:

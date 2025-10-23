@@ -8,12 +8,11 @@ from PIL import ImageQt, Image
 
 from logconf import setup_logging
 from io_utils import load_image, downscale_for_preview, save_png, make_output_path
-from variants_core import discover_variants, VariantMeta, Bool, Int, Float, Enum, Color
 from encode_mp4 import encode_frames_to_mp4
 from presets import Preset
 from watcher import FolderWatcher
 from color_field import ColorField  # color picker + hex/RGB input
-
+from variants_core import discover_variants, VariantMeta, Bool, Int, Float, Enum, Color, scale_and_cast_options
 
 APP_TITLE = "Image Variants GUI"
 PREVIEW_DEBOUNCE_MS = 150
@@ -491,11 +490,11 @@ class MainWindow(QtWidgets.QMainWindow):
         if base is None: raise RuntimeError("Preview base not available")
         orig_small = base.copy()
         if meta.animated:
-            frames = meta.func(base, **opts)
+            frames = meta.func(base, **scale_and_cast_options(meta, opts, base.size))
             proc = frames[0]["image"] if frames else base
         else:
             try:
-                proc = meta.func(base, **opts)
+               proc = meta.func(base, **scale_and_cast_options(meta, opts, base.size))
             except Exception as e:
                 self.logger.error("Failed to process %s: %s", path, e)
                 proc = base
@@ -612,15 +611,23 @@ class MainWindow(QtWidgets.QMainWindow):
                     # load saved options or defaults for each variant
                     opts = self.variant_options.get(vname, {k: o.default for k, o in meta.options.items()})
                     if meta.animated:
-                        frames = meta.func(img.copy(), **opts)  # type: ignore
-                        if frames:
-                            save_png(frames[0]["image"], make_output_path(self.out_dir, in_path, vname + "_first", "png"), overwrite=True)
-                        encode_frames_to_mp4(frames, make_output_path(self.out_dir, in_path, vname, "mp4"), fps=fps, crf=crf)
+                        try:
+                            frames = meta.func(img.copy(), **scale_and_cast_options(meta, opts, img.size))
+                            if frames:
+                                self.logger.info("Encoding %s (variant %s) to mp4.", os.path.basename(in_path), vname)
+                                save_png(frames[0]["image"], make_output_path(self.out_dir, in_path, vname + "_first", "png"), overwrite=True)
+                            encode_frames_to_mp4(frames, make_output_path(self.out_dir, in_path, vname, "mp4"), fps=fps, crf=crf)
+                        except Exception as e:
+                            self.logger.error("Preview (animated) failed for %s: %s", meta.name, e)
                     else:
-                        out_img = meta.func(img.copy(), **opts)
-                        save_png(out_img, make_output_path(self.out_dir, in_path, vname, "png"), overwrite=True)
+                        try:
+                            proc = meta.func(img.copy(), **scale_and_cast_options(meta, opts, img.size))
+                            self.logger.info("Saving %s (variant %s) to png in {%s}.", os.path.basename(in_path), vname, self.out_dir)
+                            save_png(proc, make_output_path(self.out_dir, in_path, vname, "png"), overwrite=True)
+                        except Exception as e:
+                            self.logger.error("Preview (static) failed for %s: %s", meta.name, e)
             return True
-
+        
         worker = Worker(job)
         worker.signals.result.connect(lambda _: self.statusBar().showMessage("Done", 3000))
         self.threadpool.start(worker)
